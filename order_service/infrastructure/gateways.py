@@ -1,8 +1,9 @@
 import logging
 import requests
 import time
+from typing import Optional
 from application.interfaces import PaymentGateway
-from domain.models import PaymentDetails
+from domain.entities.payment_details import PaymentDetails
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class StripePaymentGateway(PaymentGateway):
     def set_token(self, token: str):
         self.auth_token = token
 
-    def process_payment(self, order_id: str, amount: float, payment_details: PaymentDetails) -> bool:
+    def process_payment(self, order_id: str, amount: float) -> Optional[str]:
         logger.info(f"Calling Payment Service for ${amount} on order {order_id} via Circuit Breaker...")
         headers = {}
         if self.auth_token:
@@ -65,8 +66,7 @@ class StripePaymentGateway(PaymentGateway):
             
         payload = {
             "order_id": order_id, 
-            "amount": amount,
-            "payment_details": payment_details.model_dump()
+            "amount": amount
         }
 
         def _make_request():
@@ -77,13 +77,13 @@ class StripePaymentGateway(PaymentGateway):
                 timeout=5
             )
             response.raise_for_status()
-            return response.json().get("status") == "success"
+            return response.json().get("checkout_url")
 
         try:
             return self.circuit_breaker.call(_make_request)
         except CircuitBreakerOpenException:
             logger.error("Payment failed because Circuit Breaker is OPEN.")
-            return False
+            return None
         except Exception as e:
             logger.error(f"Payment processing failed: {e}")
-            return False
+            return None

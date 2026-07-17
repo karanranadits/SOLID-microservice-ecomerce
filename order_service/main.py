@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from presentation.routers import router as order_router
+from presentation.api.routers import order_router, cart_router
 
 app = FastAPI(
     title="SOLID Order Service",
@@ -16,7 +16,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(order_router, prefix="/api/v1")
+app.include_router(order_router.router, prefix="/api/v1")
+app.include_router(cart_router.router, prefix="/api/v1")
 
 @app.get("/")
 def read_root():

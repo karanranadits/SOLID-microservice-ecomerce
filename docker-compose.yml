@@ -6,6 +6,8 @@ services:
     environment:
       - PORT=8001
       - CORS_ORIGINS=http://localhost:5173
+    volumes:
+      - ./auth_service:/app
 
   order_service:
     build: ./order_service
@@ -14,6 +16,8 @@ services:
     environment:
       - PORT=8002
       - CORS_ORIGINS=http://localhost:5173
+    volumes:
+      - ./order_service:/app
     depends_on:
       - payment_service
 
@@ -24,6 +28,9 @@ services:
     environment:
       - PORT=8003
       - CORS_ORIGINS=http://localhost:5173
+      - STRIPE_SECRET_KEY=sk_test_mock
+    volumes:
+      - ./payment_service:/app
 
   frontend:
     build: ./frontend

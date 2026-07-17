@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
-from domain.models import Order, PaymentDetails
+from domain.entities.order import Order
+from domain.entities.payment_details import PaymentDetails
 
 # INTERFACE SEGREGATION PRINCIPLE (ISP)
 # Instead of one large IOrderRepository, we split into smaller, more specific interfaces.
@@ -18,5 +19,5 @@ class OrderWriter(ABC):
 
 class PaymentGateway(ABC):
     @abstractmethod
-    def process_payment(self, order_id: str, amount: float, payment_details: PaymentDetails) -> bool:
+    def process_payment(self, order_id: str, amount: float) -> Optional[str]:
         pass

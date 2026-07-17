@@ -1,5 +1,5 @@
 from typing import Optional, Dict
-from domain.models import Order
+from domain.entities.order import Order
 from application.interfaces import OrderWriter, OrderReader
 
 # LISKOV SUBSTITUTION PRINCIPLE (LSP)

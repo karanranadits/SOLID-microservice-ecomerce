@@ -26,21 +26,92 @@ function App() {
   const [loading, setLoading] = useState(false)
   
   const [showLoginModal, setShowLoginModal] = useState(false)
-  const [currentView, setCurrentView] = useState('home') // 'home' | 'orders' | 'cart' | 'checkout'
+  const [currentView, setCurrentView] = useState('home') // 'home' | 'orders' | 'cart' | 'checkout' | 'profile'
   
   // Cart State
   const [cart, setCart] = useState([])
 
-  // Billing Details
-  const [cardDetails, setCardDetails] = useState({
-    card_number: '',
-    expiry: '',
-    cvv: ''
+  // Profile State
+  const [profile, setProfile] = useState({
+    name: '',
+    address: { street: '', city: '', state: '', zip_code: '', country: '' }
   })
 
+  // Removed Billing Details as we use Stripe Checkout
+
   useEffect(() => {
-    if (token) fetchOrders()
+    if (token) {
+      fetchOrders()
+      fetchProfile()
+      fetchCart()
+    }
+    
+    // Check for Stripe Checkout success/cancel
+    const urlParams = new URLSearchParams(window.location.search)
+    if (urlParams.get('success') === 'true' && urlParams.get('order_id')) {
+      const orderId = urlParams.get('order_id')
+      handleCheckoutSuccess(orderId)
+    } else if (urlParams.get('canceled') === 'true') {
+      showMessage('Payment was canceled.', 'error')
+      window.history.replaceState({}, document.title, "/")
+    }
   }, [token])
+
+  const handleCheckoutSuccess = async (orderId) => {
+    if (!token) return; // Wait for token to load
+    try {
+      setLoading(true)
+      const res = await fetch(`${ORDER_URL}/orders/${orderId}/confirm`, {
+        method: 'PUT',
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        showMessage('Payment successful! Order has been placed.')
+        fetchOrders()
+        setCurrentView('orders')
+        window.history.replaceState({}, document.title, "/")
+      }
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const fetchProfile = async () => {
+    try {
+      const res = await fetch(`${AUTH_URL}/profile`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        if (data.address) {
+          setProfile({ name: data.name, address: data.address })
+        }
+      }
+    } catch (err) { console.error(err) }
+  }
+
+  const saveProfile = async (e) => {
+    if (e) e.preventDefault()
+    setLoading(true)
+    try {
+      const res = await fetch(`${AUTH_URL}/profile`, {
+        method: 'PUT',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify(profile)
+      })
+      if (!res.ok) throw new Error('Failed to update profile')
+      showMessage('Profile updated successfully')
+    } catch (err) {
+      showMessage(err.message, 'error')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const showMessage = (msg, type = 'success') => {
     if (type === 'error') setError(msg)
@@ -107,14 +178,47 @@ function App() {
     }
   }
 
-  const addToCart = (product) => {
-    const existing = cart.find(item => item.product_id === product.id)
-    if (existing) {
-      setCart(cart.map(item => item.product_id === product.id ? { ...item, quantity: item.quantity + 1 } : item))
-    } else {
-      setCart([...cart, { product_id: product.id, name: product.name, price: product.price, quantity: 1 }])
+  const fetchCart = async () => {
+    try {
+      const res = await fetch(`${ORDER_URL}/cart`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCart(data.items || [])
+      }
+    } catch (err) {
+      console.error(err)
     }
-    showMessage(`${product.name} added to cart!`)
+  }
+
+  const addToCart = async (product) => {
+    if (!token) {
+      setShowLoginModal(true)
+      return
+    }
+    try {
+      const res = await fetch(`${ORDER_URL}/cart`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}` 
+        },
+        body: JSON.stringify({
+          product_id: product.id,
+          name: product.name,
+          price: product.price,
+          quantity: 1
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setCart(data.items || [])
+        showMessage(`${product.name} added to cart!`)
+      }
+    } catch (err) {
+      showMessage('Failed to add to cart', 'error')
+    }
   }
 
   const getCartTotal = () => cart.reduce((sum, item) => sum + (item.price * item.quantity), 0)
@@ -140,23 +244,25 @@ function App() {
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          items: cart.map(item => ({ product_id: item.product_id, quantity: item.quantity, price: item.price })),
-          payment_details: cardDetails
+          customer_name: profile.name || username,
+          shipping_address: profile.address,
+          items: cart.map(item => ({ product_id: item.product_id, quantity: item.quantity, price: item.price }))
         })
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Order failed')
       
-      if (data.status === 'payment_failed') {
-        showMessage(`Order created but payment failed (Saga compensated). Status: ${data.status}`, 'error')
+      if (data.checkout_url) {
+        // Clear cart in backend before redirecting
+        await fetch(`${ORDER_URL}/cart`, {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        setCart([])
+        window.location.href = data.checkout_url
       } else {
-        showMessage(`Order placed successfully! Total: $${data.total_amount}`)
+        showMessage('Failed to generate checkout session.', 'error')
       }
-      
-      setCart([])
-      setCardDetails({ card_number: '', expiry: '', cvv: '' })
-      fetchOrders()
-      setCurrentView('orders')
     } catch (err) {
       showMessage(err.message, 'error')
     } finally {
@@ -168,10 +274,53 @@ function App() {
     setToken('')
     localStorage.removeItem('token')
     setOrders([])
+    setCart([])
     setCurrentView('home')
   }
 
   // Views
+  const renderProfile = () => (
+    <section className="container" style={{ padding: '80px 24px', minHeight: '60vh', maxWidth: '600px' }}>
+      <div className="section-title">
+        <h3>My Profile</h3>
+      </div>
+      <form onSubmit={saveProfile}>
+        <div className="form-group">
+          <label>Full Name</label>
+          <input type="text" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} required />
+        </div>
+        <h4 style={{ margin: '24px 0 16px' }}>Shipping Address</h4>
+        <div className="form-group">
+          <label>Street</label>
+          <input type="text" value={profile.address.street} onChange={e => setProfile({...profile, address: {...profile.address, street: e.target.value}})} required />
+        </div>
+        <div className="flex gap-4">
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>City</label>
+            <input type="text" value={profile.address.city} onChange={e => setProfile({...profile, address: {...profile.address, city: e.target.value}})} required />
+          </div>
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>State</label>
+            <input type="text" value={profile.address.state} onChange={e => setProfile({...profile, address: {...profile.address, state: e.target.value}})} required />
+          </div>
+        </div>
+        <div className="flex gap-4">
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>Zip Code</label>
+            <input type="text" value={profile.address.zip_code} onChange={e => setProfile({...profile, address: {...profile.address, zip_code: e.target.value}})} required />
+          </div>
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>Country</label>
+            <input type="text" value={profile.address.country} onChange={e => setProfile({...profile, address: {...profile.address, country: e.target.value}})} required />
+          </div>
+        </div>
+        <button type="submit" className="btn" style={{ width: '100%', marginTop: '16px' }} disabled={loading}>
+          {loading ? 'Saving...' : 'Save Profile'}
+        </button>
+      </form>
+    </section>
+  )
+
   const renderProductGrid = (category, title) => (
     <section className="container" style={{ marginBottom: '80px' }}>
       <div className="section-title">
@@ -271,38 +420,37 @@ function App() {
       </div>
 
       <form onSubmit={processCheckout}>
-        <h4 style={{ marginBottom: '24px' }}>Payment Details (Mock)</h4>
+        <h4 style={{ marginBottom: '24px' }}>Shipping Address</h4>
         <div className="form-group">
-          <label>Card Number (16 Digits)</label>
-          <input 
-            type="text" 
-            value={cardDetails.card_number} 
-            onChange={e => setCardDetails({...cardDetails, card_number: e.target.value})}
-            placeholder="1234123412341234"
-            required
-          />
+          <label>Full Name</label>
+          <input type="text" value={profile.name} onChange={e => setProfile({...profile, name: e.target.value})} required />
+        </div>
+        <div className="form-group">
+          <label>Street</label>
+          <input type="text" value={profile.address.street} onChange={e => setProfile({...profile, address: {...profile.address, street: e.target.value}})} required />
         </div>
         <div className="flex gap-4">
           <div className="form-group" style={{ flex: 1 }}>
-            <label>Expiry (MM/YY)</label>
-            <input 
-              type="text" 
-              value={cardDetails.expiry} 
-              onChange={e => setCardDetails({...cardDetails, expiry: e.target.value})}
-              placeholder="12/26"
-              required
-            />
+            <label>City</label>
+            <input type="text" value={profile.address.city} onChange={e => setProfile({...profile, address: {...profile.address, city: e.target.value}})} required />
           </div>
           <div className="form-group" style={{ flex: 1 }}>
-            <label>CVV</label>
-            <input 
-              type="text" 
-              value={cardDetails.cvv} 
-              onChange={e => setCardDetails({...cardDetails, cvv: e.target.value})}
-              placeholder="123"
-              required
-            />
+            <label>State</label>
+            <input type="text" value={profile.address.state} onChange={e => setProfile({...profile, address: {...profile.address, state: e.target.value}})} required />
           </div>
+        </div>
+        <div className="flex gap-4">
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>Zip Code</label>
+            <input type="text" value={profile.address.zip_code} onChange={e => setProfile({...profile, address: {...profile.address, zip_code: e.target.value}})} required />
+          </div>
+          <div className="form-group" style={{ flex: 1 }}>
+            <label>Country</label>
+            <input type="text" value={profile.address.country} onChange={e => setProfile({...profile, address: {...profile.address, country: e.target.value}})} required />
+          </div>
+        </div>
+        <div className="form-group" style={{ textAlign: 'center', marginBottom: '24px' }}>
+          <p className="text-muted">You will be redirected to Stripe to securely complete your payment.</p>
         </div>
         <button type="submit" className="btn" style={{ width: '100%', marginTop: '16px' }} disabled={loading}>
           {loading ? 'Processing...' : 'Pay & Place Order'}
@@ -350,6 +498,7 @@ function App() {
               <button onClick={() => setShowLoginModal(true)}>Login</button>
             ) : (
               <>
+                <button onClick={() => setCurrentView('profile')}>Profile</button>
                 <button onClick={() => setCurrentView('orders')}>My Orders</button>
                 <button onClick={logout}>Logout</button>
               </>
@@ -368,6 +517,7 @@ function App() {
         {currentView === 'cart' && renderCart()}
         {currentView === 'checkout' && renderCheckout()}
         {currentView === 'orders' && renderOrders()}
+        {currentView === 'profile' && renderProfile()}
       </main>
 
       {/* Footer */}
